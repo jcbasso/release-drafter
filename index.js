@@ -308,26 +308,10 @@ module.exports = (app, { getRouter }) => {
         context,
         message: `Updating existing PR-specific draft release for PR #${prNumber}`,
       })
-      log({
-        context,
-        message: `prSpecificRelease: ${JSON.stringify(prSpecificRelease)}`,
-      })
-      log({
-        context,
-        message: `releaseInfo: ${JSON.stringify(releaseInfo)}`,
-      })
-      log({
-        context,
-        message: `config: ${JSON.stringify(config)}`,
-      })
       createOrUpdateReleaseResponse = await updateRelease({
         context,
         release: prSpecificRelease,
         releaseInfo,
-      })
-      log({
-        context,
-        message: `Updated`,
       })
     }
 
