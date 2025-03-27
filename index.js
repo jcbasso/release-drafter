@@ -225,29 +225,26 @@ module.exports = (app, { getRouter }) => {
       prerelease, // from input/config
     } = config
 
-    // Determine if *this specific run* should be treated as a prerelease based on config/input
     const isEffectivePreRelease = Boolean(
       prerelease === undefined ? prerelease : prerelease
     )
     const usePrereleaseIdentifier =
       isEffectivePreRelease && preReleaseIdentifier
+    const isPrereleaseRun = usePrereleaseIdentifier && prNumber !== null
 
-    // We still need to consider `includePreReleases` for finding the `lastRelease`,
-    // but the *draft* we look for/create depends on `isEffectivePreRelease`.
     const shouldIncludePreReleasesForLast = Boolean(
-      includePreReleases || usePrereleaseIdentifier // Include prereleases in history if identifier is set
+      includePreReleases || usePrereleaseIdentifier
     )
 
-    const { draftRelease, lastRelease } = await findReleases({
+    const { prSpecificRelease, lastRelease } = await findReleases({
       context,
       targetCommitish: targetCommitish, // Use potentially modified targetCommitish
       filterByCommitish,
       includePreReleases: shouldIncludePreReleasesForLast,
       tagPrefix,
-      // Pass the effective prerelease status for *this run* to potentially filter drafts
-      // Note: findReleases currently only filters draft by includePreReleases,
-      // we will do PR-specific filtering later.
-      // isEffectivePreRelease: isEffectivePreRelease
+      prNumber,
+      preReleaseIdentifier,
+      isPrereleaseRun,
     })
 
     const { commits, pullRequests: mergedPullRequests } =
@@ -266,7 +263,7 @@ module.exports = (app, { getRouter }) => {
 
     const { shouldDraft, version, tag, name } = input // Get overrides from input
 
-    // **MODIFIED CALL:** Pass prNumber and draftRelease
+    // **MODIFIED CALL:** Pass prNumber and prSpecificRelease
     const releaseInfo = generateReleaseInfo({
       context,
       commits,
@@ -276,15 +273,12 @@ module.exports = (app, { getRouter }) => {
       version, // from input
       tag, // from input
       name, // from input
-      // Use the effective prerelease status for *this* release generation:
       isPreRelease: isEffectivePreRelease,
       latest, // from input/config
       shouldDraft, // from input
-      targetCommitish: targetCommitish, // Pass the final targetCommitish
-      // --- Pass new arguments ---
+      targetCommitish, // Pass the final targetCommitish
       prNumber,
-      draftRelease, // Pass the potentially found draft
-      // --- End new arguments ---
+      prSpecificRelease, // Pass the potentially found draft
     })
 
     // Check if releaseInfo is null (could happen if version calc failed)
@@ -314,11 +308,26 @@ module.exports = (app, { getRouter }) => {
         context,
         message: `Updating existing PR-specific draft release for PR #${prNumber}`,
       })
+      log({
+        context,
+        message: `prSpecificRelease: ${JSON.stringify(prSpecificRelease)}`,
+      })
+      log({
+        context,
+        message: `releaseInfo: ${JSON.stringify(releaseInfo)}`,
+      })
+      log({
+        context,
+        message: `config: ${JSON.stringify(config)}`,
+      })
       createOrUpdateReleaseResponse = await updateRelease({
         context,
-        draftRelease: draftRelease, // Use the original draftRelease object found earlier
+        release: prSpecificRelease,
         releaseInfo,
-        config, // config might not be needed here anymore? Check updateRelease
+      })
+      log({
+        context,
+        message: `Updated`,
       })
     }
 
