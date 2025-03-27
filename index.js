@@ -142,41 +142,118 @@ module.exports = (app, { getRouter }) => {
 
     updateConfigFromInput(config, input)
 
-    // GitHub Actions merge payloads slightly differ, in that their ref points
-    // to the PR branch instead of refs/heads/master
     const ref = process.env['GITHUB_REF'] || context.payload.ref
 
     if (!isTriggerableReference({ ref, context, config })) {
       return
     }
 
-    const targetCommitish = config.commitish || ref
+    // --- START NEW LOGIC: Find associated PR for push events ---
+    let prNumber = null
+    if (
+      context.name === 'push' &&
+      context.payload.head_commit &&
+      !context.payload.deleted
+    ) {
+      const { owner, repo } = context.repo()
+      const commitSha = context.payload.after // 'after' is the SHA of the most recent commit on ref after the push
+      try {
+        const associatedPulls =
+          await context.octokit.repos.listPullRequestsAssociatedWithCommit({
+            owner,
+            repo,
+            commit_sha: commitSha,
+          })
+
+        // Find the first open PR targeting one of the configured branches
+        const targetBranches = config.references.map((r) =>
+          r.replace(/^refs\/heads\//, '')
+        )
+        const relevantPR = associatedPulls.data.find(
+          (pr) => pr.state === 'open' && targetBranches.includes(pr.base.ref)
+        )
+
+        if (relevantPR) {
+          prNumber = relevantPR.number
+          log({
+            context,
+            message: `Push is associated with open PR #${prNumber}`,
+          })
+        } else {
+          log({
+            context,
+            message: `Push commit ${commitSha.slice(
+              0,
+              7
+            )} is not associated with an open PR targeting ${targetBranches.join(
+              '/'
+            )}`,
+          })
+        }
+      } catch (error) {
+        log({
+          context,
+          error,
+          message: `Could not list PRs for commit ${commitSha.slice(0, 7)}`,
+        })
+        // Continue without PR context if lookup fails
+      }
+    } else if (context.name.startsWith('pull_request')) {
+      // If triggered by pull_request event directly (though drafter is usually on push/any)
+      prNumber = context.payload.pull_request?.number
+      if (prNumber) {
+        log({ context, message: `Event is for PR #${prNumber}` })
+      }
+    }
+    // --- END NEW LOGIC ---
+
+    // GitHub Actions merge payloads slightly differ... (existing logic)
+    // const ref = process.env['GITHUB_REF'] || context.payload.ref; // Already defined above
+
+    // if (!isTriggerableReference({ ref, context, config })) { // Already checked above
+    //   return;
+    // }
+
+    const targetCommitish = config.commitish || ref // Use determined ref
 
     const {
       'filter-by-commitish': filterByCommitish,
-      'include-pre-releases': includePreReleases,
+      'include-pre-releases': includePreReleases, // Keep this for finding general drafts initially
       'prerelease-identifier': preReleaseIdentifier,
       'tag-prefix': tagPrefix,
-      latest,
-      prerelease,
+      latest, // from input/config
+      prerelease, // from input/config
     } = config
 
-    const shouldIncludePreReleases = Boolean(
-      includePreReleases || preReleaseIdentifier
+    // Determine if *this specific run* should be treated as a prerelease based on config/input
+    const isEffectivePreRelease = Boolean(
+      prerelease === undefined ? prerelease : prerelease
+    )
+    const usePrereleaseIdentifier =
+      isEffectivePreRelease && preReleaseIdentifier
+
+    // We still need to consider `includePreReleases` for finding the `lastRelease`,
+    // but the *draft* we look for/create depends on `isEffectivePreRelease`.
+    const shouldIncludePreReleasesForLast = Boolean(
+      includePreReleases || usePrereleaseIdentifier // Include prereleases in history if identifier is set
     )
 
     const { draftRelease, lastRelease } = await findReleases({
       context,
-      targetCommitish,
+      targetCommitish: targetCommitish, // Use potentially modified targetCommitish
       filterByCommitish,
-      includePreReleases: shouldIncludePreReleases,
+      includePreReleases: shouldIncludePreReleasesForLast,
       tagPrefix,
+      // Pass the effective prerelease status for *this run* to potentially filter drafts
+      // Note: findReleases currently only filters draft by includePreReleases,
+      // we will do PR-specific filtering later.
+      // isEffectivePreRelease: isEffectivePreRelease
     })
 
     const { commits, pullRequests: mergedPullRequests } =
       await findCommitsWithAssociatedPullRequests({
         context,
-        targetCommitish,
+        targetCommitish: targetCommitish, // Use potentially modified targetCommitish
         lastRelease,
         config,
       })
@@ -187,38 +264,61 @@ module.exports = (app, { getRouter }) => {
       config['sort-direction']
     )
 
-    const { shouldDraft, version, tag, name } = input
+    const { shouldDraft, version, tag, name } = input // Get overrides from input
 
+    // **MODIFIED CALL:** Pass prNumber and draftRelease
     const releaseInfo = generateReleaseInfo({
       context,
       commits,
       config,
       lastRelease,
       mergedPullRequests: sortedMergedPullRequests,
-      version,
-      tag,
-      name,
-      isPreRelease: prerelease,
-      latest,
-      shouldDraft,
-      targetCommitish,
+      version, // from input
+      tag, // from input
+      name, // from input
+      // Use the effective prerelease status for *this* release generation:
+      isPreRelease: isEffectivePreRelease,
+      latest, // from input/config
+      shouldDraft, // from input
+      targetCommitish: targetCommitish, // Pass the final targetCommitish
+      // --- Pass new arguments ---
+      prNumber,
+      draftRelease, // Pass the potentially found draft
+      // --- End new arguments ---
     })
 
+    // Check if releaseInfo is null (could happen if version calc failed)
+    if (!releaseInfo) {
+      log({
+        context,
+        message:
+          'Failed to generate release info. Skipping release creation/update.',
+      })
+      // Optionally set action failure
+      // core.setFailed("Failed to generate release info.");
+      return
+    }
+
     let createOrUpdateReleaseResponse
-    if (!draftRelease) {
+    // **MODIFIED LOGIC:** Decide update based on PR-specific draft existence passed back in releaseInfo
+    if (!releaseInfo.foundPrSpecificDraft) {
+      // Check a flag we'll set in generateReleaseInfo
       log({ context, message: 'Creating new release' })
       createOrUpdateReleaseResponse = await createRelease({
         context,
         releaseInfo,
-        config,
+        config, // config might not be needed here anymore? Check createRelease
       })
     } else {
-      log({ context, message: 'Updating existing release' })
+      log({
+        context,
+        message: `Updating existing PR-specific draft release for PR #${prNumber}`,
+      })
       createOrUpdateReleaseResponse = await updateRelease({
         context,
-        draftRelease,
+        draftRelease: draftRelease, // Use the original draftRelease object found earlier
         releaseInfo,
-        config,
+        config, // config might not be needed here anymore? Check updateRelease
       })
     }
 
