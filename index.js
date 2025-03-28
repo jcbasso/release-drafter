@@ -261,7 +261,7 @@ module.exports = (app, { getRouter }) => {
       config['sort-direction']
     )
 
-    const { shouldDraft, version, tag, name } = input // Get overrides from input
+    const { shouldDraft, version, tag, name, notCreate } = input // Get overrides from input
 
     // **MODIFIED CALL:** Pass prNumber and prSpecificRelease
     const releaseInfo = generateReleaseInfo({
@@ -290,6 +290,16 @@ module.exports = (app, { getRouter }) => {
       })
       // Optionally set action failure
       // core.setFailed("Failed to generate release info.");
+      return
+    }
+
+    if (notCreate) {
+      log({
+        context,
+        message:
+          'Failed to generate release info. Skipping release creation/update.',
+      })
+      setNonCreateOutput(releaseInfo)
       return
     }
 
@@ -346,6 +356,7 @@ function getInput() {
         : undefined,
     preReleaseIdentifier: core.getInput('prerelease-identifier') || undefined,
     latest: core.getInput('latest')?.toLowerCase() || undefined,
+    notCreate: core.getInput('not-create')?.toLowerCase() === 'true',
   }
 }
 
@@ -398,6 +409,20 @@ function setActionOutput(
   if (uploadUrl) core.setOutput('upload_url', uploadUrl)
   if (tagName) core.setOutput('tag_name', tagName)
   if (name) core.setOutput('name', name)
+  if (resolvedVersion) core.setOutput('resolved_version', resolvedVersion)
+  if (majorVersion) core.setOutput('major_version', majorVersion)
+  if (minorVersion) core.setOutput('minor_version', minorVersion)
+  if (patchVersion) core.setOutput('patch_version', patchVersion)
+  core.setOutput('body', body)
+}
+
+function setNonCreateOutput({
+  body,
+  resolvedVersion,
+  majorVersion,
+  minorVersion,
+  patchVersion,
+}) {
   if (resolvedVersion) core.setOutput('resolved_version', resolvedVersion)
   if (majorVersion) core.setOutput('major_version', majorVersion)
   if (minorVersion) core.setOutput('minor_version', minorVersion)
