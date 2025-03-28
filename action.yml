@@ -73,6 +73,11 @@ inputs:
       A boolean indicating whether the autolabeler mode is disabled.
     required: false
     default: ''
+  not-create:
+    description: |
+      A boolean indicating whether to create the release draft or not.
+    required: false
+    default: 'false'
 outputs:
   id:
     description: The ID of the release that was created or updated.
